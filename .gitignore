@@ -1,1 +1,32 @@
+## .NET / Visual Studio
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+## IDEs
+.idea/
+.vscode/
+
+## Secrets & Local Config
+appsettings.Production.json
+secrets.json
+*.env
+*.env.*
+!.env.example
+
+## Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Aider
 .aider*

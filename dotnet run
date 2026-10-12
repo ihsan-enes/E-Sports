@@ -1,0 +1,8 @@
+
+Geliştirme (`Development`) ortamında otomatik EF Core migration'ları startup anında çalıştırılır ve 3 temel oyun (LoL, CS2, Valorant) otomatik seed edilir.
+
+### 3. API Dokümantasyonu (Scalar)
+Backend ayağa kalktıktan sonra tarayıcınızdan Scalar dokümantasyonuna erişebilirsiniz:
+- URL: `http://localhost:5000/scalar/v1` (veya console çıktısındaki ilgili port: `https://localhost:7xxx/scalar/v1`)
+- OpenAPI JSON şeması: `/openapi/v1.json`
+- Örnek Test Endpoint: `GET /api/games`
