@@ -1,6 +1,13 @@
+using System.Net.Http.Headers;
 using ESpor.Api.Middleware;
 using ESpor.Application.Common.Interfaces;
+using ESpor.Application.Common.Options;
+using ESpor.Application.External.Interfaces;
 using ESpor.Application.Games.Handlers;
+using ESpor.Application.Sync.Handlers;
+using ESpor.Application.Sync.Interfaces;
+using ESpor.Application.Sync.Services;
+using ESpor.Infrastructure.External.PandaScore;
 using ESpor.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
@@ -23,7 +30,30 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 
 builder.Services.AddScoped<IApplicationDbContext>(sp => sp.GetRequiredService<ApplicationDbContext>());
 
-// Handlers
+// Configuration Options
+builder.Services.Configure<RelevanceOptions>(
+    builder.Configuration.GetSection(RelevanceOptions.SectionName));
+
+// PandaScore Typed HttpClient + Standard Resilience Handler
+var pandaScoreApiKey = builder.Configuration["PandaScore:ApiKey"]
+    ?? builder.Configuration["PandaScore__ApiKey"]
+    ?? string.Empty;
+
+builder.Services.AddHttpClient<IEsportsDataProvider, PandaScoreProvider>(client =>
+{
+    client.BaseAddress = new Uri("https://api.pandascore.co/");
+    client.DefaultRequestHeaders.Accept.Clear();
+    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+    if (!string.IsNullOrWhiteSpace(pandaScoreApiKey))
+    {
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pandaScoreApiKey);
+    }
+})
+.AddStandardResilienceHandler();
+
+// Sync Service & Handlers
+builder.Services.AddScoped<IEsportsSyncService, EsportsSyncService>();
+builder.Services.AddScoped<TriggerSyncHandler>();
 builder.Services.AddScoped<GetGamesHandler>();
 
 // Controllers & Global Exception Handling
