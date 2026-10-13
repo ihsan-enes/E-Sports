@@ -9,6 +9,7 @@ using ESpor.Application.Sync.Interfaces;
 using ESpor.Application.Sync.Services;
 using ESpor.Infrastructure.External.PandaScore;
 using ESpor.Infrastructure.Persistence;
+using ESpor.Infrastructure.Sync.Jobs;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
 
@@ -34,6 +35,9 @@ builder.Services.AddScoped<IApplicationDbContext>(sp => sp.GetRequiredService<Ap
 builder.Services.Configure<RelevanceOptions>(
     builder.Configuration.GetSection(RelevanceOptions.SectionName));
 
+builder.Services.Configure<SyncOptions>(
+    builder.Configuration.GetSection(SyncOptions.SectionName));
+
 // PandaScore Typed HttpClient + Standard Resilience Handler
 var pandaScoreApiKey = builder.Configuration["PandaScore:ApiKey"]
     ?? builder.Configuration["PandaScore__ApiKey"]
@@ -55,6 +59,11 @@ builder.Services.AddHttpClient<IEsportsDataProvider, PandaScoreProvider>(client 
 builder.Services.AddScoped<IEsportsSyncService, EsportsSyncService>();
 builder.Services.AddScoped<TriggerSyncHandler>();
 builder.Services.AddScoped<GetGamesHandler>();
+
+// Background Sync Jobs
+builder.Services.AddHostedService<LiveSyncJob>();
+builder.Services.AddHostedService<FixturesSyncJob>();
+builder.Services.AddHostedService<StatsSyncJob>();
 
 // Controllers & Global Exception Handling
 builder.Services.AddControllers();
