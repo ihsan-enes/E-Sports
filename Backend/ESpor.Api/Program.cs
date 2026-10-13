@@ -4,12 +4,17 @@ using ESpor.Application.Common.Interfaces;
 using ESpor.Application.Common.Options;
 using ESpor.Application.External.Interfaces;
 using ESpor.Application.Games.Handlers;
+using ESpor.Application.Matches.Handlers;
+using ESpor.Application.Matches.Queries;
 using ESpor.Application.Sync.Handlers;
 using ESpor.Application.Sync.Interfaces;
 using ESpor.Application.Sync.Services;
+using ESpor.Application.Tournaments.Handlers;
+using ESpor.Application.Tournaments.Queries;
 using ESpor.Infrastructure.External.PandaScore;
 using ESpor.Infrastructure.Persistence;
 using ESpor.Infrastructure.Sync.Jobs;
+using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
 
@@ -59,6 +64,18 @@ builder.Services.AddHttpClient<IEsportsDataProvider, PandaScoreProvider>(client 
 builder.Services.AddScoped<IEsportsSyncService, EsportsSyncService>();
 builder.Services.AddScoped<TriggerSyncHandler>();
 builder.Services.AddScoped<GetGamesHandler>();
+
+// Matches Handlers & Validators
+builder.Services.AddScoped<GetLiveMatchesHandler>();
+builder.Services.AddScoped<GetUpcomingMatchesHandler>();
+builder.Services.AddScoped<GetMatchByIdHandler>();
+builder.Services.AddScoped<IValidator<GetLiveMatchesQuery>, GetLiveMatchesQueryValidator>();
+builder.Services.AddScoped<IValidator<GetUpcomingMatchesQuery>, GetUpcomingMatchesQueryValidator>();
+
+// Tournaments Handlers & Validators
+builder.Services.AddScoped<GetTournamentsHandler>();
+builder.Services.AddScoped<GetTournamentByIdHandler>();
+builder.Services.AddScoped<IValidator<GetTournamentsQuery>, GetTournamentsQueryValidator>();
 
 // Background Sync Jobs
 builder.Services.AddHostedService<LiveSyncJob>();
