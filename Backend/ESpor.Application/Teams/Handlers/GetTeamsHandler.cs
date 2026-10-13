@@ -33,9 +33,9 @@ public class GetTeamsHandler
         {
             var search = query.Search.Trim().ToLower();
             teamsQuery = teamsQuery.Where(t =>
-                EF.Functions.ILike(t.Name, $"%{search}%") ||
-                EF.Functions.ILike(t.Slug, $"%{search}%") ||
-                (t.Acronym != null && EF.Functions.ILike(t.Acronym, $"%{search}%")));
+                EF.Functions.Like(t.Name.ToLower(), $"%{search}%") ||
+                EF.Functions.Like(t.Slug.ToLower(), $"%{search}%") ||
+                (t.Acronym != null && EF.Functions.Like(t.Acronym.ToLower(), $"%{search}%")));
         }
 
         var totalCount = await teamsQuery.CountAsync(cancellationToken);
