@@ -3,6 +3,7 @@ using ESpor.Application.Common.Interfaces;
 using ESpor.Application.Common.Options;
 using ESpor.Application.External.Interfaces;
 using ESpor.Application.External.Models;
+using ESpor.Application.Sync.Interfaces;
 using ESpor.Domain.Entities;
 using ESpor.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
