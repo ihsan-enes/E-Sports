@@ -6,9 +6,12 @@ using ESpor.Application.External.Interfaces;
 using ESpor.Application.Games.Handlers;
 using ESpor.Application.Matches.Handlers;
 using ESpor.Application.Matches.Queries;
+using ESpor.Application.Players.Handlers;
 using ESpor.Application.Sync.Handlers;
 using ESpor.Application.Sync.Interfaces;
 using ESpor.Application.Sync.Services;
+using ESpor.Application.Teams.Handlers;
+using ESpor.Application.Teams.Queries;
 using ESpor.Application.Tournaments.Handlers;
 using ESpor.Application.Tournaments.Queries;
 using ESpor.Infrastructure.External.PandaScore;
@@ -76,6 +79,14 @@ builder.Services.AddScoped<IValidator<GetUpcomingMatchesQuery>, GetUpcomingMatch
 builder.Services.AddScoped<GetTournamentsHandler>();
 builder.Services.AddScoped<GetTournamentByIdHandler>();
 builder.Services.AddScoped<IValidator<GetTournamentsQuery>, GetTournamentsQueryValidator>();
+
+// Teams Handlers & Validators
+builder.Services.AddScoped<GetTeamsHandler>();
+builder.Services.AddScoped<GetTeamByIdHandler>();
+builder.Services.AddScoped<IValidator<GetTeamsQuery>, GetTeamsQueryValidator>();
+
+// Players Handlers
+builder.Services.AddScoped<GetPlayerByIdHandler>();
 
 // Background Sync Jobs
 builder.Services.AddHostedService<LiveSyncJob>();
