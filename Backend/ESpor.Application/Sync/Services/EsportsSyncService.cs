@@ -69,19 +69,113 @@ public class EsportsSyncService : IEsportsSyncService
         {
             var games = await _context.Games.ToListAsync(cancellationToken);
             var now = DateTimeOffset.UtcNow;
+            var providerName = _dataProvider.ProviderName;
 
             foreach (var game in games)
             {
-                var teams = await _dataProvider.GetTeamsAsync(game.Slug, cancellationToken);
-                foreach (var teamDto in teams)
+                // 1. Teams Upsert
+                var rawTeams = await _dataProvider.GetTeamsAsync(game.Slug, cancellationToken);
+                var distinctTeams = rawTeams
+                    .Where(t => !string.IsNullOrWhiteSpace(t.ExternalId))
+                    .DistinctBy(t => t.ExternalId)
+                    .ToList();
+
+                var teamExtIds = distinctTeams.Select(t => t.ExternalId).ToList();
+                var existingTeams = await _context.Teams
+                    .Where(t => t.Provider == providerName && teamExtIds.Contains(t.ExternalId))
+                    .ToDictionaryAsync(t => t.ExternalId, cancellationToken);
+
+                foreach (var teamDto in distinctTeams)
                 {
-                    await UpsertTeamAsync(teamDto, game.Id, now, cancellationToken);
+                    if (existingTeams.TryGetValue(teamDto.ExternalId, out var existingTeam))
+                    {
+                        if (existingTeam.GameId == null)
+                        {
+                            existingTeam.GameId = game.Id;
+                        }
+                        existingTeam.Name = teamDto.Name;
+                        existingTeam.Slug = teamDto.Slug;
+                        existingTeam.Acronym = teamDto.Acronym;
+                        existingTeam.Country = teamDto.Country;
+                        existingTeam.LogoUrl = teamDto.LogoUrl;
+                        existingTeam.UpdatedAtUtc = now;
+                    }
+                    else
+                    {
+                        var newTeam = new Team
+                        {
+                            Id = Guid.NewGuid(),
+                            Provider = providerName,
+                            ExternalId = teamDto.ExternalId,
+                            GameId = game.Id,
+                            Name = teamDto.Name,
+                            Slug = teamDto.Slug,
+                            Acronym = teamDto.Acronym,
+                            Country = teamDto.Country,
+                            LogoUrl = teamDto.LogoUrl,
+                            CreatedAtUtc = now,
+                            UpdatedAtUtc = now
+                        };
+                        _context.Teams.Add(newTeam);
+                        existingTeams[teamDto.ExternalId] = newTeam;
+                    }
                 }
 
-                var players = await _dataProvider.GetPlayersAsync(game.Slug, cancellationToken);
-                foreach (var playerDto in players)
+                // 2. Players Upsert
+                var rawPlayers = await _dataProvider.GetPlayersAsync(game.Slug, cancellationToken);
+                var distinctPlayers = rawPlayers
+                    .Where(p => !string.IsNullOrWhiteSpace(p.ExternalId))
+                    .DistinctBy(p => p.ExternalId)
+                    .ToList();
+
+                var playerExtIds = distinctPlayers.Select(p => p.ExternalId).ToList();
+                var existingPlayers = await _context.Players
+                    .Where(p => p.Provider == providerName && playerExtIds.Contains(p.ExternalId))
+                    .ToDictionaryAsync(p => p.ExternalId, cancellationToken);
+
+                foreach (var playerDto in distinctPlayers)
                 {
-                    await UpsertPlayerAsync(playerDto, now, cancellationToken);
+                    Guid? teamId = null;
+                    if (!string.IsNullOrEmpty(playerDto.TeamExternalId) &&
+                        existingTeams.TryGetValue(playerDto.TeamExternalId, out var playerTeam))
+                    {
+                        teamId = playerTeam.Id;
+                    }
+
+                    if (existingPlayers.TryGetValue(playerDto.ExternalId, out var existingPlayer))
+                    {
+                        if (teamId.HasValue)
+                        {
+                            existingPlayer.TeamId = teamId;
+                        }
+                        existingPlayer.Nickname = playerDto.Nickname;
+                        existingPlayer.FirstName = playerDto.FirstName;
+                        existingPlayer.LastName = playerDto.LastName;
+                        existingPlayer.Role = playerDto.Role;
+                        existingPlayer.Country = playerDto.Country;
+                        existingPlayer.ImageUrl = playerDto.ImageUrl;
+                        existingPlayer.UpdatedAtUtc = now;
+                    }
+                    else
+                    {
+                        var newPlayer = new Player
+                        {
+                            Id = Guid.NewGuid(),
+                            Provider = providerName,
+                            ExternalId = playerDto.ExternalId,
+                            TeamId = teamId,
+                            Nickname = playerDto.Nickname,
+                            FirstName = playerDto.FirstName,
+                            LastName = playerDto.LastName,
+                            Role = playerDto.Role,
+                            Country = playerDto.Country,
+                            ImageUrl = playerDto.ImageUrl,
+                            CreatedAtUtc = now,
+                            UpdatedAtUtc = now
+                        };
+                        _context.Players.Add(newPlayer);
+                        existingPlayers[playerDto.ExternalId] = newPlayer;
+                    }
                 }
             }
 
@@ -100,104 +194,258 @@ public class EsportsSyncService : IEsportsSyncService
     {
         var games = await _context.Games.ToDictionaryAsync(g => g.Slug, g => g.Id, cancellationToken);
         var now = DateTimeOffset.UtcNow;
-        var relevantCount = 0;
+        var providerName = _dataProvider.ProviderName;
 
-        foreach (var matchDto in matchDtos)
+        // 1. İlgili maçları filtrele ve ExternalId bazında hafızada tekilleştir
+        var relevantMatches = matchDtos
+            .Where(m => !string.IsNullOrWhiteSpace(m.ExternalId) && IsMatchRelevant(m) && games.ContainsKey(m.GameSlug))
+            .DistinctBy(m => m.ExternalId)
+            .ToList();
+
+        if (relevantMatches.Count == 0)
         {
-            if (!IsMatchRelevant(matchDto))
+            return 0;
+        }
+
+        // 2. Turnuvaları topla, tekilleştir ve Upsert et
+        var distinctTournaments = relevantMatches
+            .Where(m => m.Tournament != null && !string.IsNullOrWhiteSpace(m.Tournament.ExternalId))
+            .Select(m => m.Tournament!)
+            .DistinctBy(t => t.ExternalId)
+            .ToList();
+
+        var tournamentExtIds = distinctTournaments.Select(t => t.ExternalId).ToList();
+        var existingTournaments = await _context.Tournaments
+            .Where(t => t.Provider == providerName && tournamentExtIds.Contains(t.ExternalId))
+            .ToDictionaryAsync(t => t.ExternalId, cancellationToken);
+
+        foreach (var tourDto in distinctTournaments)
+        {
+            if (!games.TryGetValue(tourDto.GameSlug, out var gameId))
             {
                 continue;
             }
 
-            if (!games.TryGetValue(matchDto.GameSlug, out var gameId))
+            if (existingTournaments.TryGetValue(tourDto.ExternalId, out var existingTour))
             {
-                continue;
-            }
-
-            // Tournament upsert
-            Tournament? tournament = null;
-            if (matchDto.Tournament != null)
-            {
-                tournament = await UpsertTournamentAsync(matchDto.Tournament, gameId, now, cancellationToken);
+                existingTour.GameId = gameId;
+                existingTour.Name = tourDto.Name;
+                existingTour.Slug = tourDto.Slug;
+                existingTour.Tier = tourDto.Tier;
+                existingTour.Region = tourDto.Region;
+                existingTour.Country = tourDto.Country;
+                existingTour.LeagueSlug = tourDto.LeagueSlug;
+                existingTour.StartDateUtc = tourDto.StartDateUtc;
+                existingTour.EndDateUtc = tourDto.EndDateUtc;
+                existingTour.UpdatedAtUtc = now;
             }
             else
             {
-                tournament = await _context.Tournaments
-                    .FirstOrDefaultAsync(t => t.Provider == _dataProvider.ProviderName && t.ExternalId == matchDto.TournamentExternalId, cancellationToken);
+                var newTour = new Tournament
+                {
+                    Id = Guid.NewGuid(),
+                    Provider = providerName,
+                    ExternalId = tourDto.ExternalId,
+                    GameId = gameId,
+                    Name = tourDto.Name,
+                    Slug = tourDto.Slug,
+                    Tier = tourDto.Tier,
+                    Region = tourDto.Region,
+                    Country = tourDto.Country,
+                    LeagueSlug = tourDto.LeagueSlug,
+                    StartDateUtc = tourDto.StartDateUtc,
+                    EndDateUtc = tourDto.EndDateUtc,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                };
+                _context.Tournaments.Add(newTour);
+                existingTournaments[tourDto.ExternalId] = newTour;
             }
+        }
 
-            if (tournament == null)
+        // 3. Takımları topla, tekilleştir ve Upsert et
+        var teamDtos = new List<ProviderTeamDto>();
+        foreach (var match in relevantMatches)
+        {
+            if (match.Team1 != null && !string.IsNullOrWhiteSpace(match.Team1.ExternalId)) teamDtos.Add(match.Team1);
+            if (match.Team2 != null && !string.IsNullOrWhiteSpace(match.Team2.ExternalId)) teamDtos.Add(match.Team2);
+        }
+
+        var distinctTeams = teamDtos.DistinctBy(t => t.ExternalId).ToList();
+        var teamExtIds = distinctTeams.Select(t => t.ExternalId)
+            .Concat(relevantMatches.Where(m => !string.IsNullOrEmpty(m.Team1ExternalId)).Select(m => m.Team1ExternalId!))
+            .Concat(relevantMatches.Where(m => !string.IsNullOrEmpty(m.Team2ExternalId)).Select(m => m.Team2ExternalId!))
+            .Concat(relevantMatches.Where(m => !string.IsNullOrEmpty(m.WinnerTeamExternalId)).Select(m => m.WinnerTeamExternalId!))
+            .Distinct()
+            .ToList();
+
+        var existingTeams = await _context.Teams
+            .Where(t => t.Provider == providerName && teamExtIds.Contains(t.ExternalId))
+            .ToDictionaryAsync(t => t.ExternalId, cancellationToken);
+
+        foreach (var teamDto in distinctTeams)
+        {
+            Guid? gameId = games.TryGetValue(teamDto.GameSlug, out var gId) ? gId : null;
+
+            if (existingTeams.TryGetValue(teamDto.ExternalId, out var existingTeam))
+            {
+                if (gameId.HasValue && existingTeam.GameId == null)
+                {
+                    existingTeam.GameId = gameId;
+                }
+                existingTeam.Name = teamDto.Name;
+                existingTeam.Slug = teamDto.Slug;
+                existingTeam.Acronym = teamDto.Acronym;
+                existingTeam.Country = teamDto.Country;
+                existingTeam.LogoUrl = teamDto.LogoUrl;
+                existingTeam.UpdatedAtUtc = now;
+            }
+            else
+            {
+                var newTeam = new Team
+                {
+                    Id = Guid.NewGuid(),
+                    Provider = providerName,
+                    ExternalId = teamDto.ExternalId,
+                    GameId = gameId,
+                    Name = teamDto.Name,
+                    Slug = teamDto.Slug,
+                    Acronym = teamDto.Acronym,
+                    Country = teamDto.Country,
+                    LogoUrl = teamDto.LogoUrl,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                };
+                _context.Teams.Add(newTeam);
+                existingTeams[teamDto.ExternalId] = newTeam;
+            }
+        }
+
+        // 4. Oyuncuları topla, tekilleştir ve Upsert et
+        var playerDtos = relevantMatches
+            .Where(m => m.Players != null)
+            .SelectMany(m => m.Players!)
+            .Where(p => !string.IsNullOrWhiteSpace(p.ExternalId))
+            .DistinctBy(p => p.ExternalId)
+            .ToList();
+
+        if (playerDtos.Count > 0)
+        {
+            var playerExtIds = playerDtos.Select(p => p.ExternalId).ToList();
+            var existingPlayers = await _context.Players
+                .Where(p => p.Provider == providerName && playerExtIds.Contains(p.ExternalId))
+                .ToDictionaryAsync(p => p.ExternalId, cancellationToken);
+
+            foreach (var pDto in playerDtos)
+            {
+                Guid? teamId = null;
+                if (!string.IsNullOrEmpty(pDto.TeamExternalId) &&
+                    existingTeams.TryGetValue(pDto.TeamExternalId, out var plTeam))
+                {
+                    teamId = plTeam.Id;
+                }
+
+                if (existingPlayers.TryGetValue(pDto.ExternalId, out var existingPl))
+                {
+                    if (teamId.HasValue)
+                    {
+                        existingPl.TeamId = teamId;
+                    }
+                    existingPl.Nickname = pDto.Nickname;
+                    existingPl.FirstName = pDto.FirstName;
+                    existingPl.LastName = pDto.LastName;
+                    existingPl.Role = pDto.Role;
+                    existingPl.Country = pDto.Country;
+                    existingPl.ImageUrl = pDto.ImageUrl;
+                    existingPl.UpdatedAtUtc = now;
+                }
+                else
+                {
+                    var newPl = new Player
+                    {
+                        Id = Guid.NewGuid(),
+                        Provider = providerName,
+                        ExternalId = pDto.ExternalId,
+                        TeamId = teamId,
+                        Nickname = pDto.Nickname,
+                        FirstName = pDto.FirstName,
+                        LastName = pDto.LastName,
+                        Role = pDto.Role,
+                        Country = pDto.Country,
+                        ImageUrl = pDto.ImageUrl,
+                        CreatedAtUtc = now,
+                        UpdatedAtUtc = now
+                    };
+                    _context.Players.Add(newPl);
+                    existingPlayers[pDto.ExternalId] = newPl;
+                }
+            }
+        }
+
+        // 5. Maçları Upsert et
+        var matchExtIds = relevantMatches.Select(m => m.ExternalId).ToList();
+        var existingMatches = await _context.Matches
+            .Where(m => m.Provider == providerName && matchExtIds.Contains(m.ExternalId))
+            .ToDictionaryAsync(m => m.ExternalId, cancellationToken);
+
+        var processedCount = 0;
+        foreach (var matchDto in relevantMatches)
+        {
+            var gameId = games[matchDto.GameSlug];
+
+            // Turnuva referansı
+            var tourExtId = matchDto.Tournament?.ExternalId ?? matchDto.TournamentExternalId;
+            if (!existingTournaments.TryGetValue(tourExtId, out var tournament))
             {
                 continue;
             }
 
-            // Team 1 upsert
+            // Takım 1 referansı
+            var team1ExtId = matchDto.Team1?.ExternalId ?? matchDto.Team1ExternalId;
             Guid? team1Id = null;
-            if (matchDto.Team1 != null)
+            if (!string.IsNullOrEmpty(team1ExtId) && existingTeams.TryGetValue(team1ExtId, out var t1))
             {
-                var team1 = await UpsertTeamAsync(matchDto.Team1, gameId, now, cancellationToken);
-                team1Id = team1.Id;
-            }
-            else if (!string.IsNullOrEmpty(matchDto.Team1ExternalId))
-            {
-                var team1 = await _context.Teams
-                    .FirstOrDefaultAsync(t => t.Provider == _dataProvider.ProviderName && t.ExternalId == matchDto.Team1ExternalId, cancellationToken);
-                team1Id = team1?.Id;
+                team1Id = t1.Id;
             }
 
-            // Team 2 upsert
+            // Takım 2 referansı
+            var team2ExtId = matchDto.Team2?.ExternalId ?? matchDto.Team2ExternalId;
             Guid? team2Id = null;
-            if (matchDto.Team2 != null)
+            if (!string.IsNullOrEmpty(team2ExtId) && existingTeams.TryGetValue(team2ExtId, out var t2))
             {
-                var team2 = await UpsertTeamAsync(matchDto.Team2, gameId, now, cancellationToken);
-                team2Id = team2.Id;
-            }
-            else if (!string.IsNullOrEmpty(matchDto.Team2ExternalId))
-            {
-                var team2 = await _context.Teams
-                    .FirstOrDefaultAsync(t => t.Provider == _dataProvider.ProviderName && t.ExternalId == matchDto.Team2ExternalId, cancellationToken);
-                team2Id = team2?.Id;
+                team2Id = t2.Id;
             }
 
-            // Winner Team
+            // Galip takım referansı
             Guid? winnerTeamId = null;
-            if (!string.IsNullOrEmpty(matchDto.WinnerTeamExternalId))
+            if (!string.IsNullOrEmpty(matchDto.WinnerTeamExternalId) &&
+                existingTeams.TryGetValue(matchDto.WinnerTeamExternalId, out var winnerTeam))
             {
-                if (matchDto.Team1 != null && matchDto.Team1.ExternalId == matchDto.WinnerTeamExternalId)
-                {
-                    winnerTeamId = team1Id;
-                }
-                else if (matchDto.Team2 != null && matchDto.Team2.ExternalId == matchDto.WinnerTeamExternalId)
-                {
-                    winnerTeamId = team2Id;
-                }
-                else
-                {
-                    var winnerTeam = await _context.Teams
-                        .FirstOrDefaultAsync(t => t.Provider == _dataProvider.ProviderName && t.ExternalId == matchDto.WinnerTeamExternalId, cancellationToken);
-                    winnerTeamId = winnerTeam?.Id;
-                }
+                winnerTeamId = winnerTeam.Id;
             }
 
-            // Players upsert
-            if (matchDto.Players != null)
+            if (existingMatches.TryGetValue(matchDto.ExternalId, out var match))
             {
-                foreach (var playerDto in matchDto.Players)
-                {
-                    await UpsertPlayerAsync(playerDto, now, cancellationToken);
-                }
+                match.GameId = gameId;
+                match.TournamentId = tournament.Id;
+                match.Status = matchDto.Status;
+                match.ScheduledAtUtc = matchDto.ScheduledAtUtc;
+                match.StartedAtUtc = matchDto.StartedAtUtc;
+                match.EndedAtUtc = matchDto.EndedAtUtc;
+                match.BestOf = matchDto.BestOf;
+                match.Team1Id = team1Id;
+                match.Team2Id = team2Id;
+                match.Team1Score = matchDto.Team1Score;
+                match.Team2Score = matchDto.Team2Score;
+                match.WinnerTeamId = winnerTeamId;
+                match.UpdatedAtUtc = now;
             }
-
-            // Match upsert
-            var match = await _context.Matches
-                .FirstOrDefaultAsync(m => m.Provider == _dataProvider.ProviderName && m.ExternalId == matchDto.ExternalId, cancellationToken);
-
-            if (match == null)
+            else
             {
                 match = new Match
                 {
                     Id = Guid.NewGuid(),
-                    Provider = _dataProvider.ProviderName,
+                    Provider = providerName,
                     ExternalId = matchDto.ExternalId,
                     GameId = gameId,
                     TournamentId = tournament.Id,
@@ -215,29 +463,14 @@ public class EsportsSyncService : IEsportsSyncService
                     UpdatedAtUtc = now
                 };
                 _context.Matches.Add(match);
-            }
-            else
-            {
-                match.GameId = gameId;
-                match.TournamentId = tournament.Id;
-                match.Status = matchDto.Status;
-                match.ScheduledAtUtc = matchDto.ScheduledAtUtc;
-                match.StartedAtUtc = matchDto.StartedAtUtc;
-                match.EndedAtUtc = matchDto.EndedAtUtc;
-                match.BestOf = matchDto.BestOf;
-                match.Team1Id = team1Id;
-                match.Team2Id = team2Id;
-                match.Team1Score = matchDto.Team1Score;
-                match.Team2Score = matchDto.Team2Score;
-                match.WinnerTeamId = winnerTeamId;
-                match.UpdatedAtUtc = now;
+                existingMatches[matchDto.ExternalId] = match;
             }
 
-            relevantCount++;
+            processedCount++;
         }
 
         await _context.SaveChangesAsync(cancellationToken);
-        return relevantCount;
+        return processedCount;
     }
 
     private bool IsMatchRelevant(ProviderMatchDto matchDto)
@@ -279,149 +512,5 @@ public class EsportsSyncService : IEsportsSyncService
         }
 
         return false;
-    }
-
-    private async Task<Tournament> UpsertTournamentAsync(
-        ProviderTournamentDto dto,
-        Guid gameId,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        var tournament = await _context.Tournaments
-            .FirstOrDefaultAsync(t => t.Provider == _dataProvider.ProviderName && t.ExternalId == dto.ExternalId, cancellationToken);
-
-        if (tournament == null)
-        {
-            tournament = new Tournament
-            {
-                Id = Guid.NewGuid(),
-                Provider = _dataProvider.ProviderName,
-                ExternalId = dto.ExternalId,
-                GameId = gameId,
-                Name = dto.Name,
-                Slug = dto.Slug,
-                Tier = dto.Tier,
-                Region = dto.Region,
-                Country = dto.Country,
-                LeagueSlug = dto.LeagueSlug,
-                StartDateUtc = dto.StartDateUtc,
-                EndDateUtc = dto.EndDateUtc,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now
-            };
-            _context.Tournaments.Add(tournament);
-        }
-        else
-        {
-            tournament.GameId = gameId;
-            tournament.Name = dto.Name;
-            tournament.Slug = dto.Slug;
-            tournament.Tier = dto.Tier;
-            tournament.Region = dto.Region;
-            tournament.Country = dto.Country;
-            tournament.LeagueSlug = dto.LeagueSlug;
-            tournament.StartDateUtc = dto.StartDateUtc;
-            tournament.EndDateUtc = dto.EndDateUtc;
-            tournament.UpdatedAtUtc = now;
-        }
-
-        return tournament;
-    }
-
-    private async Task<Team> UpsertTeamAsync(
-        ProviderTeamDto dto,
-        Guid? gameId,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        var team = await _context.Teams
-            .FirstOrDefaultAsync(t => t.Provider == _dataProvider.ProviderName && t.ExternalId == dto.ExternalId, cancellationToken);
-
-        if (team == null)
-        {
-            team = new Team
-            {
-                Id = Guid.NewGuid(),
-                Provider = _dataProvider.ProviderName,
-                ExternalId = dto.ExternalId,
-                GameId = gameId,
-                Name = dto.Name,
-                Slug = dto.Slug,
-                Acronym = dto.Acronym,
-                Country = dto.Country,
-                LogoUrl = dto.LogoUrl,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now
-            };
-            _context.Teams.Add(team);
-        }
-        else
-        {
-            if (gameId.HasValue && team.GameId == null)
-            {
-                team.GameId = gameId;
-            }
-            team.Name = dto.Name;
-            team.Slug = dto.Slug;
-            team.Acronym = dto.Acronym;
-            team.Country = dto.Country;
-            team.LogoUrl = dto.LogoUrl;
-            team.UpdatedAtUtc = now;
-        }
-
-        return team;
-    }
-
-    private async Task<Player> UpsertPlayerAsync(
-        ProviderPlayerDto dto,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        Guid? teamId = null;
-        if (!string.IsNullOrEmpty(dto.TeamExternalId))
-        {
-            var team = await _context.Teams
-                .FirstOrDefaultAsync(t => t.Provider == _dataProvider.ProviderName && t.ExternalId == dto.TeamExternalId, cancellationToken);
-            teamId = team?.Id;
-        }
-
-        var player = await _context.Players
-            .FirstOrDefaultAsync(p => p.Provider == _dataProvider.ProviderName && p.ExternalId == dto.ExternalId, cancellationToken);
-
-        if (player == null)
-        {
-            player = new Player
-            {
-                Id = Guid.NewGuid(),
-                Provider = _dataProvider.ProviderName,
-                ExternalId = dto.ExternalId,
-                TeamId = teamId,
-                Nickname = dto.Nickname,
-                FirstName = dto.FirstName,
-                LastName = dto.LastName,
-                Role = dto.Role,
-                Country = dto.Country,
-                ImageUrl = dto.ImageUrl,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now
-            };
-            _context.Players.Add(player);
-        }
-        else
-        {
-            if (teamId.HasValue)
-            {
-                player.TeamId = teamId;
-            }
-            player.Nickname = dto.Nickname;
-            player.FirstName = dto.FirstName;
-            player.LastName = dto.LastName;
-            player.Role = dto.Role;
-            player.Country = dto.Country;
-            player.ImageUrl = dto.ImageUrl;
-            player.UpdatedAtUtc = now;
-        }
-
-        return player;
     }
 }
